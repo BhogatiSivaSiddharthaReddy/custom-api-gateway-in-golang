@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,7 +20,7 @@ func backendHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Backend received request")
 
 	// Simulate slow backend
-	time.Sleep(10 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	fmt.Fprintln(w, "Backend response completed")
 }
@@ -80,8 +81,8 @@ func gatewayHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer resp.Body.Close()
-
-	fmt.Fprintln(w, "Gateway received backend response")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 //
