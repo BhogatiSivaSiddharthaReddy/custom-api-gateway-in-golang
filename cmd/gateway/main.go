@@ -10,79 +10,162 @@ import (
 	"time"
 )
 
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	ParentCtx := r.Context()
+//
+// BACKEND SERVER
+//
 
-	Childctx, cancel := context.WithTimeout(ParentCtx, 30*time.Second)
+func backendHandler(w http.ResponseWriter, r *http.Request) {
+
+	fmt.Println("Backend received request")
+
+	// Simulate slow backend
+	time.Sleep(10 * time.Second)
+
+	fmt.Fprintln(w, "Backend response completed")
+}
+
+//
+// GATEWAY SERVER
+//
+
+func gatewayHandler(w http.ResponseWriter, r *http.Request) {
+
+	fmt.Println("Gateway received request")
+
+	parentCtx := r.Context()
+
+	// Gateway timeout policy
+	ctx, cancel := context.WithTimeout(
+		parentCtx,
+		3*time.Second,
+	)
 
 	defer cancel()
 
-	err := backendCall(Childctx)
+	// Outgoing backend request with context propagation
+	req, err := http.NewRequestWithContext(
+		ctx,
+		"GET",
+		"http://localhost:8081",
+		nil,
+	)
 
 	if err != nil {
+
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusInternalServerError,
+		)
+
+		return
+	}
+
+	client := &http.Client{}
+
+	resp, err := client.Do(req)
+
+	// Backend timed out / cancelled
+	if err != nil {
+
+		fmt.Println("Gateway timeout:", err)
+
 		http.Error(
 			w,
 			"Gateway Timeout",
 			http.StatusGatewayTimeout,
 		)
+
 		return
 	}
-	fmt.Fprintln(w, "Request Succesfull")
+
+	defer resp.Body.Close()
+
+	fmt.Fprintln(w, "Gateway received backend response")
 }
 
-func backendCall(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		fmt.Println("Backend Canclled:", ctx.Err())
-		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		fmt.Println("request done")
-		return nil
-	}
-
-}
-
-func helloWorld(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Received request:", r.URL.Path)
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintln(w, `{"message": "Hello World"}`)
-}
-
-func pinghandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Received request:", r.URL.Path)
-	time.Sleep(5 * time.Second)
-	fmt.Fprintln(w, "PONG")
-}
+//
+// MAIN
+//
 
 func main() {
+
 	fmt.Println("Starting API Gateway")
 
-	http.HandleFunc("/", helloWorld)
-	http.HandleFunc("/ping", pinghandler)
-	http.HandleFunc("/day5", proxyHandler)
+	//
+	// BACKEND SERVER
+	//
 
-	//http.ListenAndServe(":8080", nil)
+	backendMux := http.NewServeMux()
 
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: nil,
+	backendMux.HandleFunc("/", backendHandler)
+
+	backendServer := &http.Server{
+		Addr:    ":8081",
+		Handler: backendMux,
 	}
 
 	go func() {
-		server.ListenAndServe()
+
+		fmt.Println("Backend server running on :8081")
+
+		if err := backendServer.ListenAndServe(); err != nil &&
+			err != http.ErrServerClosed {
+
+			fmt.Println("Backend server error:", err)
+		}
 	}()
+
+	//
+	// GATEWAY SERVER
+	//
+
+	gatewayMux := http.NewServeMux()
+
+	gatewayMux.HandleFunc("/day5", gatewayHandler)
+
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: gatewayMux,
+	}
+
+	go func() {
+
+		fmt.Println("Gateway server running on :8080")
+
+		if err := server.ListenAndServe(); err != nil &&
+			err != http.ErrServerClosed {
+
+			fmt.Println("Gateway server error:", err)
+		}
+	}()
+
+	//
+	// GRACEFUL SHUTDOWN
+	//
 
 	quit := make(chan os.Signal, 1)
 
-	signal.Notify(quit, syscall.SIGTERM, os.Interrupt)
+	signal.Notify(
+		quit,
+		syscall.SIGTERM,
+		os.Interrupt,
+	)
 
 	<-quit
 
-	fmt.Println("Shutting Down Server")
+	fmt.Println("Shutting down servers...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
 
 	defer cancel()
 
 	server.Shutdown(ctx)
+
+	backendServer.Shutdown(ctx)
+
+	fmt.Println("Servers stopped gracefully")
 }
